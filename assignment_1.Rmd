@@ -1,0 +1,151 @@
+---
+title: "Assignment 1 — Electric Vehicle Population Data"
+author: "Your Name"
+date: "`r format(Sys.Date())`"
+output: html_document
+---
+
+# Overview
+
+This report completes the required tasks:
+1. Import a web-sourced dataset with both quantitative and categorical variables  
+2. Print descriptive statistics (numeric & categorical)  
+3. Transform at least one variable  
+4. Create one univariate plot and one scatterplot  
+5. Include a link to the dataset source
+
+> **Dataset**: *Electric Vehicle Population Data (Washington State)*  
+> **Source**: _https://catalog.data.gov/dataset/electric-vehicle-population-data._
+
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+# Packages
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(scales)
+```
+
+# 1) Import the dataset
+
+Below we read the CSV file named `Electric_Vehicle_Population_Data.csv`.  
+If you keep the file in the same folder as this Rmd, the following line will work as-is.
+
+```{r import}
+# If your file is in a different folder, update the path below.
+csv_path <- "Electric_Vehicle_Population_Data.csv"
+
+# Read the data
+df <- read_csv(csv_path, show_col_types = FALSE)
+
+# Quick look
+dim(df)
+colnames(df)
+head(df, 5)
+```
+
+**Columns (abbrev.)**
+- Quantitative: `Model Year`, `Electric Range`, `Base MSRP`  
+- Categorical: `Make`, `Model`, `Electric Vehicle Type`, `Clean Alternative Fuel Vehicle (CAFV) Eligibility`, `County`, `City`
+
+# 2) Descriptive statistics
+
+## Numeric summaries
+
+```{r numeric-summaries}
+# Choose numeric variables present in the dataset
+numeric_vars <- c("Model Year", "Electric Range", "Base MSRP")
+
+# Defensive: keep only columns that exist & are numeric
+num_cols <- intersect(numeric_vars, names(df))
+
+df %>%
+  select(all_of(num_cols)) %>%
+  summary()
+```
+
+> *Note:* In this dataset, `Base MSRP` can contain zeros that represent missing/unknown list prices.  
+> We can treat 0 as missing for MSRP-related summaries/plots if needed.
+
+```{r msrp-clean-summary}
+df <- df %>% mutate(Base_MSRP_clean = ifelse(`Base MSRP` <= 0 | is.na(`Base MSRP`), NA_real_, `Base MSRP`))
+
+summary(df$Base_MSRP_clean)
+```
+
+## Categorical summaries
+
+```{r categorical-summaries}
+cat_vars <- c("Make", "Model", "Electric Vehicle Type", "Clean Alternative Fuel Vehicle (CAFV) Eligibility")
+
+# Show top categories for large-cardinality columns
+lapply(cat_vars, function(v) {
+  if (v %in% names(df)) {
+    tab <- table(df[[v]], useNA = "ifany")
+    sort(tab, decreasing = TRUE)[1:10]  # top 10 levels
+  } else {
+    paste("Column not found:", v)
+  }
+})
+```
+
+# 3) Transform at least one variable
+
+Here we add two example transformations (either one satisfies the requirement):
+- `is_Tesla`: converts `Make` to a binary indicator (1 if Tesla, else 0).  
+- `log1p_range`: log-transform of `Electric Range` to reduce right skew.
+
+```{r transform}
+df <- df %>%
+  mutate(
+    is_Tesla = ifelse(Make == "TESLA" | Make == "Tesla", 1L, 0L),
+    log1p_range = ifelse(is.na(`Electric Range`), NA_real_, log1p(`Electric Range`))
+  )
+
+# Quick check
+df %>% select(Make, `Electric Range`, is_Tesla, log1p_range) %>% head(10)
+```
+
+# 4) Plots
+
+## A) Univariate plot (Histogram of Electric Range)
+
+```{r hist-electric-range, fig.width=7, fig.height=4}
+ggplot(df, aes(x = `Electric Range`)) +
+  geom_histogram(bins = 40) +
+  labs(
+    title = "Distribution of Electric Range",
+    x = "Electric Range (miles)",
+    y = "Count"
+  )
+```
+
+## B) Scatterplot: Model Year vs Electric Range, colored by Electric Vehicle Type
+
+```{r scatter-year-range, fig.width=7, fig.height=4}
+# Keep rows with both Model Year and Electric Range available
+plot_df <- df %>%
+  filter(!is.na(`Model Year`), !is.na(`Electric Range`))
+
+ggplot(plot_df, aes(x = `Model Year`, y = `Electric Range`, color = `Electric Vehicle Type`)) +
+  geom_point(alpha = 0.4) +
+  labs(
+    title = "Model Year vs. Electric Range",
+    x = "Model Year",
+    y = "Electric Range (miles)",
+    color = "EV Type"
+  )
+```
+
+# 5) Notes & Interpretation (brief)
+
+- **Electric Range** histogram shows the typical driving range distribution for vehicles in the dataset.  
+- **Model Year vs Range**: newer model years generally trend toward higher ranges; BEVs typically offer higher range than PHEVs.  
+- **Transformations**: `log1p_range` can help normalize the distribution for modeling; `is_Tesla` can be used to compare Tesla vs non‑Tesla vehicles on summary stats or plots.
+
+# Appendix
+
+```{r session-info}
+sessionInfo()
+```
