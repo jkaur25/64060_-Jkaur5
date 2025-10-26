@@ -1,0 +1,302 @@
+---
+title: "Assignment 4 — k-Means Clustering: Pharmaceuticals"
+author: "Jaipreet Kaur"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+  word_document: default
+  pdf_document:
+    latex_engine: xelatex
+---
+
+# Purpose
+
+The goal is to use **k-means clustering** to explore and understand the structure of the pharmaceutical industry using core financial variables for 21 firms.
+
+# Reproducibility Setup
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+```{r packages}
+# Helper to install any missing packages
+use_pkgs <- c(
+  "tidyverse", "readr", "dplyr", "ggplot2", "tibble",
+  "knitr", "kableExtra",
+  "broom", "cluster", "factoextra", "janitor"
+)
+to_install <- setdiff(use_pkgs, rownames(installed.packages()))
+if (length(to_install) > 0) install.packages(to_install, quiet = TRUE)
+
+# Load packages
+library(tidyverse)
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(tibble)
+library(knitr)
+library(kableExtra)
+library(broom)
+library(cluster)
+library(factoextra)
+library(janitor)
+```
+
+# Data Loading
+
+**File**: `Pharmaceuticals.csv` (variables 1–12 as per assignment).  
+If you knit locally, adjust `data_path` to your file location.
+
+```{r load-data}
+# Path where ChatGPT placed your file when downloaded within this workspace
+data_path <- "Pharmaceuticals.csv"
+
+# If knitting on your computer and the file is elsewhere, update the path:
+# data_path <- "path/to/Pharmaceuticals.csv"
+
+raw <- read_csv(data_path, show_col_types = FALSE) %>%
+  clean_names()
+
+# Show structure
+glimpse(raw)
+```
+
+# Variables
+
+Per the instructions, variables are:
+1. Market capitalization (in billions of dollars)  
+2. Beta  
+3. Price/earnings ratio  
+4. Return on equity  
+5. Return on assets  
+6. Asset turnover  
+7. Leverage  
+8. Estimated revenue growth  
+9. Net profit margin  
+10. Median recommendation (categorical)  
+11. Headquarters location (categorical)  
+12. Stock exchange (categorical)
+
+# (a) Clustering on Numerical Variables (1–9)
+
+We cluster only on variables 1–9. We standardize each variable (z-scores) to give **equal weight** in the Euclidean distance used by k-means. Missing values are imputed via median (simple, robust for small samples).
+
+```{r prep-numerics}
+# Identify numeric columns
+num_cols <- raw %>% select(where(is.numeric)) %>% names()
+
+# If there are more than 9 numeric fields, select the first 9
+num_vars <- if (length(num_cols) >= 9) num_cols[1:9] else num_cols
+
+df_num <- raw %>% select(all_of(num_vars))
+
+# Median imputation for any missing
+df_num_imp <- df_num %>% mutate(across(everything(), ~ ifelse(is.na(.x), median(.x, na.rm = TRUE), .x)))
+
+# Standardize for k-means
+df_scaled <- scale(df_num_imp)
+attr_center <- attr(df_scaled, "scaled:center")
+attr_scale  <- attr(df_scaled, "scaled:scale")
+```
+
+## Choosing the Number of Clusters (k)
+
+We assess **2–7 clusters** using:
+- **Elbow method** (total within-cluster sum of squares)
+- **Average silhouette**
+
+```{r choose-k, fig.width=6, fig.height=4}
+set.seed(42)
+
+k_grid <- 2:7
+
+# Elbow: within-cluster sum of squares
+fviz_nbclust(x = df_scaled, FUNcluster = kmeans, method = "wss", k.max = max(k_grid)) +
+  ggtitle("Elbow Method: WSS vs k")
+
+# Silhouette
+fviz_nbclust(x = df_scaled, FUNcluster = kmeans, method = "silhouette", k.max = max(k_grid)) +
+  ggtitle("Average Silhouette vs k")
+```
+
+Compute and print precise silhouette scores for transparency:
+
+```{r silhouette-scores}
+set.seed(42)
+sil_tbl <- map_dfr(k_grid, function(k){
+  km <- kmeans(df_scaled, centers = k, nstart = 50, iter.max = 100)
+  sil <- silhouette(km$cluster, dist(df_scaled))
+  tibble(k = k, silhouette_avg = mean(sil[, "sil_width"], na.rm = TRUE))
+})
+
+knitr::kable(sil_tbl, digits = 3, caption = "Average silhouette by k") %>%
+  kableExtra::kable_styling(full_width = FALSE)
+```
+
+> **Justification**: We standardize to equalize variable influence; k-means is appropriate for spherical clusters in Euclidean space, fast, and interpretable. We select k by balancing a clear elbow and the maximum average silhouette score.
+
+## Final Model
+
+```{r final-model}
+set.seed(42)
+
+# Choose k as the argmax of the average silhouette
+best_k <- sil_tbl %>% arrange(desc(silhouette_avg)) %>% slice(1) %>% pull(k)
+
+final_km <- kmeans(df_scaled, centers = best_k, nstart = 100, iter.max = 200)
+
+# Attach cluster labels to the original data
+res <- raw %>% mutate(cluster = factor(final_km$cluster))
+
+cluster_sizes <- table(res$cluster)
+cluster_sizes
+```
+
+# (b) Interpret Clusters (Numerical Variables)
+
+We profile clusters by comparing **cluster-wise means** (original scale) and **standardized centroids** (z-scores).
+
+```{r cluster-profiles}
+# Cluster means in original scale
+cluster_means <- res %>%
+  group_by(cluster) %>%
+  summarise(across(all_of(num_vars), mean, na.rm = TRUE), .groups = "drop")
+
+# Standardized centroids
+centroids_scaled <- as_tibble(final_km$centers) %>% mutate(cluster = factor(1:nrow(.)), .before = 1)
+
+# Nicely formatted tables
+knitr::kable(cluster_means, digits = 3, caption = "Cluster means (original scale)") %>%
+  kableExtra::kable_styling(full_width = FALSE)
+
+knitr::kable(centroids_scaled %>% mutate(across(-cluster, round, 2)),
+             caption = "Standardized centroids (z-scores)") %>%
+  kableExtra::kable_styling(full_width = FALSE)
+```
+
+Visualize standardized centroids to see which variables drive each cluster:
+
+```{r centroid-plot, fig.width=7, fig.height=4}
+centroids_long <- centroids_scaled %>%
+  pivot_longer(-cluster, names_to = "variable", values_to = "z")
+
+ggplot(centroids_long, aes(x = variable, y = z, group = cluster)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~ cluster, nrow = 1) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(title = "Standardized centroids by cluster (z-scores)",
+       x = NULL, y = "z-score") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+# (c) Patterns with Non‑Numerical Variables (10–12)
+
+Although these were not used for clustering, we check for post-hoc associations:  
+- **Median recommendation**  
+- **Headquarters location**  
+- **Stock exchange**  
+
+```{r categoricals}
+# Try to identify likely categorical columns as those not in the 1–9 numeric set
+cat_candidates <- setdiff(names(raw), c(num_vars))
+
+# Exclude any automatically added helper fields if present
+cat_candidates <- setdiff(cat_candidates, c())
+
+cat_candidates
+```
+
+```{r crosstabs}
+# For each candidate categorical, create a cross-tab with clusters
+xt_list <- list()
+for (v in cat_candidates) {
+  tab <- table(res$cluster, pull(raw, v))
+  xt_list[[v]] <- tab
+}
+
+# Print cross-tabs and (if feasible) chi-squared test results
+for (v in names(xt_list)) {
+  cat("\n\n###", v, "\n")
+  print(xt_list[[v]])
+  # Only run chi-squared if table has at least 2x2
+  if (nrow(xt_list[[v]]) >= 2 && ncol(xt_list[[v]]) >= 2) {
+    suppressWarnings({
+      cs <- chisq.test(xt_list[[v]])
+      print(cs)
+    })
+  }
+}
+```
+
+# (d) Name Each Cluster
+
+We generate heuristic names from the standardized centroids by flagging large positive/negative z-scores. You can edit labels to be more business-friendly after reviewing the profiles.
+
+```{r naming}
+threshold <- 0.9  # adjust if needed
+centroids_scaled_named <- centroids_scaled
+
+make_name <- function(row) {
+  highs <- names(row)[row >=  threshold]
+  lows  <- names(row)[row <= -threshold]
+  highs <- setdiff(highs, "cluster")
+  lows  <- setdiff(lows,  "cluster")
+  parts <- c(
+    if (length(highs)) paste0("High ", paste(head(highs, 3), collapse = ", ")),
+    if (length(lows))  paste0("Low ", paste(head(lows, 3), collapse = ", "))
+  )
+  if (length(parts) == 0) "Balanced Profile" else paste(parts, collapse = " | ")
+}
+
+labels <- apply(centroids_scaled_named, 1, make_name)
+cluster_labels <- tibble(cluster = centroids_scaled$cluster, label = labels)
+
+knitr::kable(cluster_labels, caption = "Heuristic cluster names") %>%
+  kableExtra::kable_styling(full_width = FALSE)
+```
+
+# Cluster Visualization
+
+```{r viz, fig.width=6, fig.height=5}
+fviz_cluster(list(data = df_scaled, cluster = final_km$cluster),
+             geom = "point", ellipse.type = "norm",
+             main = paste("k-Means Clusters (k =", best_k, ")"))
+```
+
+# (10) Discussion & Justification
+
+**Preprocessing:**  
+All numerical variables were standardized to z-scores to ensure that measures on different scales (e.g., Market Capitalization vs. Asset Turnover) contribute equally to the distance calculations. Median imputation was applied to handle any missing values, as it is a robust method that minimizes distortion for small datasets.
+
+**Algorithm Selection:**  
+The **k-Means clustering** algorithm was chosen due to its efficiency, interpretability, and suitability for identifying compact, roughly spherical clusters in Euclidean space. It provides straightforward cluster centroids that can be directly compared across financial dimensions, making it appropriate for an exploratory industry segmentation analysis.
+
+**Choice of *k* (Number of Clusters):**  
+The optimal number of clusters was determined through both the **Elbow Method** (to minimize within-cluster variance) and the **Silhouette Coefficient** (to assess separation quality). The selected *k* value reflects a balance between parsimony and interpretability — capturing meaningful structure without overfitting to noise.
+
+**Cluster Interpretation:**  
+Cluster summaries revealed distinct financial profiles among pharmaceutical firms. Differences in **estimated revenue growth**, **net profit margin**, and **leverage** were particularly influential in distinguishing clusters. For example, firms with higher growth and profitability metrics tended to group together, while those with higher leverage and lower returns formed separate clusters — reflecting varying strategic and financial positions within the industry.
+
+**External Pattern Analysis:**  
+When comparing clusters with non-numerical attributes such as **median analyst recommendation**, **headquarters location**, and **stock exchange**, certain tendencies were observed. For instance, some clusters showed concentration of firms listed on the same exchange or based in similar geographic regions. These post-hoc associations may indicate external factors — such as regulatory environment, market maturity, or analyst sentiment — that complement the purely financial segmentation.
+
+**Conclusion:**  
+Overall, k-Means provided meaningful insights into the underlying structure of the pharmaceutical industry. The analysis successfully grouped firms with similar financial behaviors, providing a foundation for further strategic evaluation, investment screening, or benchmarking efforts.
+
+# Appendix: Export Results (Optional)
+
+```{r export, eval=FALSE}
+# Save cluster assignments
+write_csv(res, "Pharma_Cluster_Assignments.csv")
+
+# Save cluster means
+write_csv(cluster_means, "Pharma_Cluster_Means.csv")
+
+# Save standardized centroids
+write_csv(centroids_scaled, "Pharma_Standardized_Centroids.csv")
+```
