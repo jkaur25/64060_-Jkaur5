@@ -1,0 +1,61 @@
+
+---
+title: "Assignment 5 - Hierarchical Clustering"
+output: html_document
+---
+
+```{r}
+library(dplyr)
+library(cluster)
+library(factoextra)
+
+data <- read.csv("Cereals.csv")
+data <- na.omit(data)
+
+numeric_data <- data %>% select_if(is.numeric)
+scaled_data <- scale(numeric_data)
+
+agnes_single <- agnes(scaled_data, method = "single")
+agnes_complete <- agnes(scaled_data, method = "complete")
+agnes_average <- agnes(scaled_data, method = "average")
+agnes_ward <- agnes(scaled_data, method = "ward")
+
+plot(agnes_single)
+plot(agnes_complete)
+plot(agnes_average)
+plot(agnes_ward)
+
+agnes_ward$ac
+
+cluster_model <- cutree(agnes_ward, k = 4)
+table(cluster_model)
+
+set.seed(123)
+n <- nrow(scaled_data)
+idx <- sample(1:n, n/2)
+
+A <- scaled_data[idx, ]
+B <- scaled_data[-idx, ]
+
+agnes_A <- agnes(A, method = "ward")
+clusters_A <- cutree(agnes_A, k = 4)
+centroids <- aggregate(A, by=list(cluster=clusters_A), mean)
+
+assign_to_centroid <- function(df, centers){
+  apply(df, 1, function(x){
+    dists <- apply(centers[,-1], 1, function(c) sum((x-c)^2))
+    which.min(dists)
+  })
+}
+
+B_assigned <- assign_to_centroid(B, centroids)
+
+agnes_full <- agnes(scaled_data, method = "ward")
+full_clusters <- cutree(agnes_full, 4)
+full_B <- full_clusters[-idx]
+
+table(B_assigned, full_B)
+
+healthy_cluster <- which.max(centroids$fiber)
+healthy_cluster
+```
